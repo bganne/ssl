@@ -12,6 +12,7 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include "ssl_helper.h"
 #include "common.h"
 
 int main(int argc, const char **argv)
@@ -64,12 +65,12 @@ int main(int argc, const char **argv)
 			err = read(STDIN_FILENO, buf, sizeof(buf));
 			if (0 == err) break;
 			ASSERT(sizeof(buf) == err, "read()");
-			err = SSL_write(ssl, buf, err);
+			err = ssl_helper_write(ssl, buf, err);
 			if (0 == err) break;
 			ASSERT_SSL(sizeof(buf) == err);
 		}
 		if (FD_ISSET(sock, &rfds)) {
-			err = SSL_read(ssl, buf, sizeof(buf));
+			err = ssl_helper_read(ssl, buf, sizeof(buf));
 			if (0 == err) break;
 			ASSERT_SSL(sizeof(buf) == err);
 			err = write(STDOUT_FILENO, buf, sizeof(buf));

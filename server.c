@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -13,6 +14,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "common.h"
+#include "ssl_helper.h"
 #include "stats.h"
 
 #define SERVER_CERT			"cert.pem"
@@ -54,7 +56,7 @@ static void * ssl_worker(void *worker_)
 			int err = select(nfds, &rfds, NULL, NULL, NULL);
 			ASSERT(-1 != err, "select()");
 			if (FD_ISSET(sock, &rfds)) {
-				err = SSL_read(ssl, buf, sizeof(buf));
+				err = ssl_helper_read(ssl, buf, sizeof(buf));
 				if (0 == err) return 0;
 				ASSERT_SSL(sizeof(buf) == err);
 				err = write(out, buf, err);
@@ -65,7 +67,7 @@ static void * ssl_worker(void *worker_)
 				err = read(in, buf, sizeof(buf));
 				if (0 == err) return 0;
 				ASSERT(sizeof(buf) == err, "read()");
-				err = SSL_write(ssl, buf, err);
+				err = ssl_helper_write(ssl, buf, err);
 				if (0 == err) return 0;
 				ASSERT_SSL(sizeof(buf) == err);
 			}
@@ -116,6 +118,14 @@ static SSL * ssl_accept(SSL_CTX *ctx, int listen_sock)
 
 	fprintf(stderr, "Connection from %x, port %x\n", sa_cli.sin_addr.s_addr,
 			sa_cli.sin_port);
+
+	/* set non-blocking socket */
+	int flags = fcntl(sock, F_GETFL);
+	ASSERT(-1 != flags, "fcntl");
+	flags |= O_NONBLOCK;
+	int err = fcntl(sock, F_SETFL, flags);
+	ASSERT(-1 != err, "fcntl");
+
 
 	SSL *ssl = SSL_new(ctx);
 	ASSERT_SSL(ssl);

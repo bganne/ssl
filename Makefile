@@ -21,12 +21,12 @@ endif
 
 all: server client
 
-server: server.c
+server: server.c ssl_helper.o
 
-client: client.c
+client: client.c ssl_helper.o
 
 clean:
-	$(RM) server client
+	$(RM) server client *.o
 
 test: server client
 	./server $(PORT) $(CIPHER) &
