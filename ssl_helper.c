@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <sys/select.h>
 #include <openssl/ssl.h>
-#include "common.h"
+#include "err.h"
 #include "ssl_helper.h"
 
 static void handle_err(int err_, SSL *ssl)
@@ -9,9 +9,10 @@ static void handle_err(int err_, SSL *ssl)
 	fd_set fds, *rfds = NULL, *wfds = NULL;
 	int err = SSL_get_error(ssl, err_);
 	if (SSL_ERROR_WANT_READ == err) {
-		fprintf(stderr, "got want read\n");
+		fprintf(stderr, "DEBUG: SSL_ERROR_WANT_READ\n");
 		rfds = &fds;
 	} else if (SSL_ERROR_WANT_WRITE == err) {
+		fprintf(stderr, "DEBUG: SSL_ERROR_WANT_WRITE\n");
 		wfds = &fds;
 	} else {
 		ASSERT_SSL(0);

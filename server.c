@@ -13,7 +13,8 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include "common.h"
+#include "err.h"
+#include "sock_helper.h"
 #include "ssl_helper.h"
 #include "stats.h"
 
@@ -35,7 +36,7 @@ ssl_worker_t workers[2*SESSION_MAX];
 
 static void * ssl_worker(void *worker_)
 {
-	static __thread char buf[PACKET_SIZE];
+	static __thread char buf[65536];
 	ssl_worker_t *worker = worker_;
 	SSL *ssl = worker->ssl;
 	int in = worker->in;
@@ -43,37 +44,40 @@ static void * ssl_worker(void *worker_)
 
 	int sock = SSL_get_fd(ssl);
 	ASSERT_SSL(sock >= 0);
-	int nfds = (sock < in ? in : sock) + 1;
+	int nfds = sock < in ? in : sock;
 	fd_set rfds;
 	FD_ZERO(&rfds);
 
 	for (;;) {
 		timestats_t ts;
 		timestats_start(&ts);
+		long bytes = 0;
 		for (int i=0; i<STATS_UPDATE_FREQ; i++) {
 			FD_SET(sock, &rfds);
 			FD_SET(in, &rfds);
-			int err = select(nfds, &rfds, NULL, NULL, NULL);
+			int err = select(nfds+1, &rfds, NULL, NULL, NULL);
 			ASSERT(-1 != err, "select()");
 			if (FD_ISSET(sock, &rfds)) {
 				err = ssl_helper_read(ssl, buf, sizeof(buf));
 				if (0 == err) return 0;
-				ASSERT_SSL(sizeof(buf) == err);
+				ASSERT_SSL(err > 0);
 				err = write(out, buf, err);
 				if (0 == err) return 0;
-				ASSERT(sizeof(buf) == err, "write()");
+				ASSERT(err > 0, "write()");
+				bytes += err;
 			}
 			if (FD_ISSET(in, &rfds)) {
 				err = read(in, buf, sizeof(buf));
 				if (0 == err) return 0;
-				ASSERT(sizeof(buf) == err, "read()");
+				ASSERT(err > 0, "read()");
 				err = ssl_helper_write(ssl, buf, err);
 				if (0 == err) return 0;
-				ASSERT_SSL(sizeof(buf) == err);
+				ASSERT_SSL(err > 0);
+				bytes += err;
 			}
 		}
 		timestats_stop(&ts);
-		stats_update(&worker->stats, STATS_UPDATE_FREQ, PACKET_SIZE, &ts);
+		stats_update(&worker->stats, STATS_UPDATE_FREQ, bytes, &ts);
 	}
 	return NULL;
 }
@@ -88,44 +92,10 @@ static void ssl_worker_spawn(int tid, SSL *ssl, int in, int out)
 	ASSERT(0 == err, "pthread_create(ssl_worker) failed");
 }
 
-static int ssl_listen(int port)
-{
-	int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	ASSERT(sock >= 0, "socket");
-
-	struct sockaddr_in sa_serv;
-	memset(&sa_serv, 0, sizeof(sa_serv));
-	sa_serv.sin_family = AF_INET;
-	sa_serv.sin_addr.s_addr = INADDR_ANY;
-	sa_serv.sin_port = htons(port);
-	int err = bind(sock, (struct sockaddr *)&sa_serv, sizeof(sa_serv));
-	ASSERT(0 == err, "bind()");
-
-	err = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
-	ASSERT(0 == err, "setsockopt");
-
-	err = listen(sock, 5);
-	ASSERT(0 == err, "listen");
-
-	return sock;
-}
-
 static SSL * ssl_accept(SSL_CTX *ctx, int listen_sock)
 {
-	struct sockaddr_in sa_cli;
-	int sock = accept(listen_sock, (struct sockaddr*)&sa_cli, (socklen_t[]){sizeof(sa_cli)});
-	ASSERT(sock >= 0, "accept");
-
-	fprintf(stderr, "Connection from %x, port %x\n", sa_cli.sin_addr.s_addr,
-			sa_cli.sin_port);
-
-	/* set non-blocking socket */
-	int flags = fcntl(sock, F_GETFL);
-	ASSERT(-1 != flags, "fcntl");
-	flags |= O_NONBLOCK;
-	int err = fcntl(sock, F_SETFL, flags);
-	ASSERT(-1 != err, "fcntl");
-
+	int sock = sock_helper_accept(listen_sock);
+	sock_helper_set_nonblock(sock);
 
 	SSL *ssl = SSL_new(ctx);
 	ASSERT_SSL(ssl);
@@ -191,7 +161,7 @@ int main(int argc, const char **argv)
 	err = SSL_CTX_use_PrivateKey_file(ctx, SERVER_KEY, SSL_FILETYPE_PEM);
 	ASSERT_SSL(1 == err);
 
-	int sock = ssl_listen(port);
+	int sock = sock_helper_listen(port);
 
 	printf("Server started on port %i with ciphers %s...\n", port, argv[2]);
 

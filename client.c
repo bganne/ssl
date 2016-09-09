@@ -8,12 +8,17 @@
 #include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <pthread.h>
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include "tun.h"
+#include "sock_helper.h"
 #include "ssl_helper.h"
-#include "common.h"
+#include "err.h"
+
+#define DEV	"stun%d"
 
 int main(int argc, const char **argv)
 {
@@ -21,11 +26,12 @@ int main(int argc, const char **argv)
 		fprintf(stderr, "Usage: %s <host> <port> <cipher>\n", argv[0]);
 		exit(-1);
 	}
-	struct in_addr addr;
-	int err = inet_aton(argv[1], &addr);
-	ASSERT(err != 0, "inet_aton()");
+	const char *addr = argv[1];
 	int port = atoi(argv[2]);
 	const char *cipher = argv[3];
+
+	int tunfd = tun_alloc(DEV, (char [IFNAMSIZ]){});
+	ASSERT(tunfd >= 0, "tun_alloc()");
 
 	SSL_library_init();
 	SSL_load_error_strings();
@@ -33,49 +39,41 @@ int main(int argc, const char **argv)
 	const SSL_METHOD *meth = SSLv23_method();
 	SSL_CTX *ctx = SSL_CTX_new(meth);
 	ASSERT_SSL(ctx);
-	err = SSL_CTX_set_cipher_list(ctx, cipher);
+	int err = SSL_CTX_set_cipher_list(ctx, cipher);
 	ASSERT_SSL(1 == err);
 
-	int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	ASSERT(sock >= 0, "socket");
-
-	struct sockaddr_in sa = {};
-	sa.sin_family = AF_INET;
-	sa.sin_addr.s_addr = addr.s_addr;
-	sa.sin_port = htons(port);
-	err = connect(sock, (void *)&sa, sizeof(sa));
-	ASSERT(0 == err, "connect()");
-
+	int ssl_sock = sock_helper_connect(addr, port);
 	SSL *ssl = SSL_new(ctx);
 	ASSERT_SSL(ssl);
-	SSL_set_fd(ssl, sock);
+	SSL_set_fd(ssl, ssl_sock);
 	err = SSL_connect(ssl);
 	ASSERT_SSL(1 == err);
 
 	fd_set rfds;
 	FD_ZERO(&rfds);
+	int nfds = ssl_sock < tunfd ? tunfd : ssl_sock;
 
 	for (;;) {
-		static __thread char buf[PACKET_SIZE];
-		FD_SET(STDIN_FILENO, &rfds);
-		FD_SET(sock, &rfds);
-		err = select(sock+1, &rfds, NULL, NULL, NULL);
+		static __thread char buf[65536];
+		FD_SET(tunfd, &rfds);
+		FD_SET(ssl_sock, &rfds);
+		err = select(nfds+1, &rfds, NULL, NULL, NULL);
 		ASSERT(-1 != err, "select()");
-		if (FD_ISSET(STDIN_FILENO, &rfds)) {
-			err = read(STDIN_FILENO, buf, sizeof(buf));
+		if (FD_ISSET(tunfd, &rfds)) {
+			err = read(tunfd, buf, sizeof(buf));
 			if (0 == err) break;
-			ASSERT(sizeof(buf) == err, "read()");
+			ASSERT(err > 0, "read()");
 			err = ssl_helper_write(ssl, buf, err);
 			if (0 == err) break;
-			ASSERT_SSL(sizeof(buf) == err);
+			ASSERT_SSL(err > 0);
 		}
-		if (FD_ISSET(sock, &rfds)) {
+		if (FD_ISSET(ssl_sock, &rfds)) {
 			err = ssl_helper_read(ssl, buf, sizeof(buf));
 			if (0 == err) break;
-			ASSERT_SSL(sizeof(buf) == err);
-			err = write(STDOUT_FILENO, buf, sizeof(buf));
+			ASSERT_SSL(err > 0);
+			err = write(tunfd, buf, err);
 			if (0 == err) break;
-			ASSERT_SSL(sizeof(buf) == err);
+			ASSERT_SSL(err > 0);
 		}
 	}
 

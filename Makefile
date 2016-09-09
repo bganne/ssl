@@ -21,20 +21,14 @@ endif
 
 all: server client
 
-server: server.c ssl_helper.o
+server: server.c sock_helper.o ssl_helper.o
 
-client: client.c ssl_helper.o
+client: client.c tun.o sock_helper.o ssl_helper.o
 
 clean:
 	$(RM) server client *.o
 
 test: server client
-	./server $(PORT) $(CIPHER) &
-	sleep 0.5
-	./client 127.0.0.1 $(PORT) $(CIPHER) < /dev/zero > /dev/null &
-	./client 127.0.0.1 $(PORT) $(CIPHER) < /dev/zero > /dev/null &
-	sleep $(DURATION)
-	-pkill client
-	-pkill server
+	sudo ./run_test.sh $(PORT) $(CIPHER) $(DURATION)
 
 .PHONY: all clean test
