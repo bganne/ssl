@@ -17,6 +17,7 @@
 #include "sock_helper.h"
 #include "ssl_helper.h"
 #include "stats.h"
+#include "packet.h"
 
 #define SERVER_CERT			"cert.pem"
 #define SERVER_KEY			SERVER_CERT
@@ -36,7 +37,6 @@ ssl_worker_t workers[2*SESSION_MAX];
 
 static void * ssl_worker(void *worker_)
 {
-	static __thread char buf[65536];
 	ssl_worker_t *worker = worker_;
 	SSL *ssl = worker->ssl;
 	int in = worker->in;
@@ -48,6 +48,7 @@ static void * ssl_worker(void *worker_)
 	fd_set rfds;
 	FD_ZERO(&rfds);
 
+	int rem = 0;
 	for (;;) {
 		timestats_t ts;
 		timestats_start(&ts);
@@ -58,6 +59,7 @@ static void * ssl_worker(void *worker_)
 			int err = select(nfds+1, &rfds, NULL, NULL, NULL);
 			ASSERT(-1 != err, "select()");
 			if (FD_ISSET(sock, &rfds)) {
+				static __thread char buf[PACKET_MAXSZ];
 				err = ssl_helper_read(ssl, buf, sizeof(buf));
 				if (0 == err) return 0;
 				ASSERT_SSL(err > 0);
@@ -67,13 +69,29 @@ static void * ssl_worker(void *worker_)
 				bytes += err;
 			}
 			if (FD_ISSET(in, &rfds)) {
+				static __thread char buf[PACKET_MAXSZ];
+#if 0
+				(void)rem;
 				err = read(in, buf, sizeof(buf));
 				if (0 == err) return 0;
 				ASSERT(err > 0, "read()");
 				err = ssl_helper_write(ssl, buf, err);
-				if (0 == err) return 0;
 				ASSERT_SSL(err > 0);
 				bytes += err;
+#else
+				int len = read(in, &buf[rem], sizeof(buf)-rem);
+				if (0 == len) return 0;
+				ASSERT(len > 0, "read()");
+				const packet_t *pkt;
+				foreach_packet(pkt, (void *)buf, len) {
+					err = ssl_helper_write(ssl, pkt, PACKET_TOTSZ(pkt));
+					if (0 == err) return 0;
+					ASSERT_SSL(err > 0);
+					bytes += err;
+				}
+				rem = packet_remaining(pkt, buf, len);
+				if (rem) memmove(buf, pkt, rem);
+#endif
 			}
 		}
 		timestats_stop(&ts);

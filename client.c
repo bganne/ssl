@@ -17,8 +17,9 @@
 #include "sock_helper.h"
 #include "ssl_helper.h"
 #include "err.h"
+#include "packet.h"
 
-#define DEV	"stun%d"
+#define STUN		"stun%d"
 
 int main(int argc, const char **argv)
 {
@@ -30,7 +31,7 @@ int main(int argc, const char **argv)
 	int port = atoi(argv[2]);
 	const char *cipher = argv[3];
 
-	int tunfd = tun_alloc(DEV, (char [IFNAMSIZ]){});
+	int tunfd = tun_alloc(STUN, (char [IFNAMSIZ]){});
 	ASSERT(tunfd >= 0, "tun_alloc()");
 
 	SSL_library_init();
@@ -53,27 +54,36 @@ int main(int argc, const char **argv)
 	FD_ZERO(&rfds);
 	int nfds = ssl_sock < tunfd ? tunfd : ssl_sock;
 
+	int rem = 0;
 	for (;;) {
-		static __thread char buf[65536];
 		FD_SET(tunfd, &rfds);
 		FD_SET(ssl_sock, &rfds);
 		err = select(nfds+1, &rfds, NULL, NULL, NULL);
 		ASSERT(-1 != err, "select()");
 		if (FD_ISSET(tunfd, &rfds)) {
-			err = read(tunfd, buf, sizeof(buf));
+			static __thread char buf[PACKET_MAXSZ];
+			packet_t *pkt = (void *)buf;
+			err = read(tunfd, pkt->data, sizeof(buf));
 			if (0 == err) break;
 			ASSERT(err > 0, "read()");
-			err = ssl_helper_write(ssl, buf, err);
+			pkt->len = err;
+			err = ssl_helper_write(ssl, pkt, PACKET_TOTSZ(pkt));
 			if (0 == err) break;
 			ASSERT_SSL(err > 0);
 		}
 		if (FD_ISSET(ssl_sock, &rfds)) {
-			err = ssl_helper_read(ssl, buf, sizeof(buf));
-			if (0 == err) break;
-			ASSERT_SSL(err > 0);
-			err = write(tunfd, buf, err);
-			if (0 == err) break;
-			ASSERT_SSL(err > 0);
+			static __thread char buf[PACKET_MAXSZ];
+			int len = ssl_helper_read(ssl, &buf[rem], sizeof(buf) - rem);
+			if (0 == len) break;
+			ASSERT_SSL(len > 0);
+			const packet_t *pkt;
+			foreach_packet(pkt, (void *)buf, len) {
+				err = write(tunfd, pkt->data, pkt->len);
+				if (0 == err) break;
+				ASSERT(err > 0, "write()");
+			}
+			rem = packet_remaining(pkt, buf, len);
+			if (rem) memmove(buf, pkt, rem);
 		}
 	}
 
