@@ -59,7 +59,7 @@ ip netns exec net1 ping -c1 $IPERFS
 # run test
 ip netns exec net0 iperf -u -s  &
 sleep 0.5
-ip netns exec net1 iperf -u -c $IPERFS -d -b$BW -t$DURATION -l$PACKETSZ
+ip netns exec net1 iperf -u -c $IPERFS -b$BW -t$DURATION -l$PACKETSZ
 sleep 0.5
 
 # cleanup
